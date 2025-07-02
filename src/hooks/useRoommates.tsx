@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
@@ -90,32 +89,24 @@ export const useRoommates = () => {
         return;
       }
 
-      console.log('🔍 STEP 1: Checking auth.users table directly');
+      console.log('🔍 STEP 1: Looking for user in auth.users table');
       
-      // First, let's check auth.users directly using a database function
-      const { data: authUsers, error: authError } = await supabase.rpc('get_users_details', {
-        p_user_ids: []
+      // First, check if the user exists in auth.users by using our RPC function
+      const { data: userDetails, error: userDetailsError } = await supabase.rpc('get_users_details', {
+        p_user_ids: [] // We'll use a different approach
       });
-      
-      console.log('📊 Auth users check result:', { authUsers, authError });
 
-      // Check profiles table
-      console.log('🔍 STEP 2: Checking profiles table');
-      const { data: allProfiles, error: allProfilesError } = await supabase
-        .from('profiles')
-        .select('*');
-      
-      console.log('📊 All profiles in system:', allProfiles);
-      console.log('📊 Profiles error:', allProfilesError);
+      console.log('📊 User details check result:', { userDetails, userDetailsError });
 
-      // Look for target user profile
+      // Let's try a more direct approach - check profiles table first
+      console.log('🔍 STEP 2: Checking profiles table for email:', email.toLowerCase());
       const { data: targetUserProfile, error: profileError } = await supabase
         .from('profiles')
         .select('id, email, name, full_name, upi_id, mobile_number')
-        .eq('email', email.toLowerCase())
+        .ilike('email', email.toLowerCase()) // Use ilike for case-insensitive search
         .maybeSingle();
 
-      console.log('📊 Target user profile query:', { targetUserProfile, profileError });
+      console.log('📊 Target user profile query result:', { targetUserProfile, profileError });
 
       if (profileError && profileError.code !== 'PGRST116') {
         console.error('❌ Database error:', profileError);
@@ -130,17 +121,20 @@ export const useRoommates = () => {
       if (!targetUserProfile) {
         console.log('❌ USER NOT FOUND IN PROFILES');
         
-        // Let's try a different approach - search by partial email match
-        const { data: partialMatch, error: partialError } = await supabase
+        // Let's also check if there are any profiles at all for debugging
+        const { data: allProfiles, error: allProfilesError } = await supabase
           .from('profiles')
-          .select('*')
-          .ilike('email', `%${email}%`);
+          .select('email')
+          .limit(5);
         
-        console.log('🔍 Partial email match results:', partialMatch);
+        console.log('🔍 Sample profiles in database:', allProfiles);
         
         toast({
           title: "❌ User Not Found",
-          description: `No user found with email "${email}". Make sure they have signed up and logged in at least once.`,
+          description: `No user found with email "${email}". Please make sure:
+          1. They have signed up on AirMates
+          2. They have logged in at least once
+          3. The email address is correct`,
           variant: "destructive",
         });
         return;
@@ -148,12 +142,12 @@ export const useRoommates = () => {
 
       console.log('✅ FOUND USER! Profile:', targetUserProfile);
 
-      // Check for duplicates
+      // Check for duplicates in roommates table
       const { data: existingRoommate, error: checkError } = await supabase
         .from('roommates')
         .select('id')
         .eq('user_id', user.id)
-        .eq('email', email.toLowerCase())
+        .ilike('email', email.toLowerCase()) // Use ilike for case-insensitive search
         .maybeSingle();
 
       if (checkError) {
@@ -182,11 +176,11 @@ export const useRoommates = () => {
 
       console.log('📊 Current user profile:', currentUserProfile);
 
-      // Create roommate entry for current user
+      // Create roommate entry for current user (adding the target user to current user's list)
       const roommateData = { 
         name: targetUserProfile.name || targetUserProfile.full_name || targetUserProfile.email.split('@')[0] || 'Unknown',
         upi_id: targetUserProfile.upi_id || 'Not set',
-        email: targetUserProfile.email,
+        email: targetUserProfile.email.toLowerCase(),
         phone: targetUserProfile.mobile_number || null,
         user_id: user.id,
         balance: 0 
@@ -205,12 +199,12 @@ export const useRoommates = () => {
 
       console.log('✅ Roommate created successfully!');
 
-      // Create reciprocal entry for target user
+      // Create reciprocal entry for target user (adding current user to target user's list)
       if (currentUserProfile) {
         const reciprocalData = { 
           name: currentUserProfile.name || currentUserProfile.full_name || user.email?.split('@')[0] || 'Unknown User',
           upi_id: currentUserProfile.upi_id || 'Not set',
-          email: user.email || '',
+          email: (user.email || '').toLowerCase(),
           phone: currentUserProfile.mobile_number || null,
           user_id: targetUserProfile.id,
           balance: 0 
@@ -224,6 +218,8 @@ export const useRoommates = () => {
 
         if (targetUserRoommateError) {
           console.error('❌ Failed to create reciprocal roommate entry:', targetUserRoommateError);
+          // Don't throw here as the main roommate was created successfully
+          console.warn('⚠️ Reciprocal entry failed, but main roommate was added');
         } else {
           console.log('✅ Reciprocal roommate created successfully!');
         }
@@ -233,7 +229,7 @@ export const useRoommates = () => {
       
       toast({
         title: "🎉 Success!",
-        description: `Roommate added successfully!`,
+        description: `${targetUserProfile.name || targetUserProfile.email} has been added as your roommate!`,
       });
       
     } catch (error: any) {
