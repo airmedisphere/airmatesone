@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
@@ -27,25 +28,22 @@ export const useRoommates = () => {
 
     try {
       setLoading(true);
-      console.log('Fetching roommates for user:', user.email);
+      console.log('🔍 Fetching roommates for user:', user.email);
       
-      // Query roommates table. RLS policy will ensure only relevant roommates are returned.
       const { data, error } = await supabase
         .from('roommates')
         .select('*')
-        // Removed .eq('user_id', user.id) to rely on RLS:
-        // auth.uid() = user_id OR roommates.email = public.get_current_user_email()
         .order('created_at', { ascending: false });
 
       if (error) {
-        console.error('Supabase error fetching roommates:', error);
+        console.error('❌ Supabase error fetching roommates:', error);
         throw error;
       }
       
-      console.log('Fetched roommates:', data);
+      console.log('✅ Fetched roommates:', data);
       setRoommates(data || []);
     } catch (error: any) {
-      console.error('Error fetching roommates:', error);
+      console.error('💥 Error fetching roommates:', error);
       toast({
         title: "Error",
         description: `Failed to fetch roommates: ${error.message}`,
@@ -56,7 +54,7 @@ export const useRoommates = () => {
     }
   };
 
-  const addRoommate = async (roommate: Omit<Roommate, 'id' | 'user_id' | 'balance'>) => {
+  const addRoommate = async (email: string) => {
     if (!user) {
       toast({
         title: "Error",
@@ -67,108 +65,182 @@ export const useRoommates = () => {
     }
 
     try {
-      console.log('Adding roommate:', roommate);
-      console.log('Current user:', user.id);
-
-      // Validate required fields
-      if (!roommate.name || !roommate.upi_id || !roommate.email) {
-        toast({
-          title: "Error",
-          description: "Please fill in all required fields (name, UPI ID, and email)",
-          variant: "destructive",
-        });
-        return;
-      }
+      console.log('🚀 DEBUGGING ROOMMATE ADDITION');
+      console.log('📧 Target email:', email);
+      console.log('👤 Current user:', user.id, user.email);
 
       // Validate email format
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(roommate.email)) {
+      if (!emailRegex.test(email)) {
         toast({
-          title: "Error",
+          title: "Invalid Email",
           description: "Please enter a valid email address",
           variant: "destructive",
         });
         return;
       }
 
-      // Check if the target roommate email exists as a registered user in profiles
-      const { data: targetUserAccount, error: lookupError } = await supabase
-        .from('profiles')
-        .select('id, email')
-        .eq('email', roommate.email)
-        .maybeSingle();
-
-      if (lookupError) {
-        console.error('Error looking up user in profiles:', lookupError);
+      // Check if trying to add themselves
+      if (email.toLowerCase() === user.email?.toLowerCase()) {
         toast({
           title: "Error",
-          description: "Could not verify roommate's account status. Please try again.",
+          description: "You cannot add yourself as a roommate",
           variant: "destructive",
         });
         return;
       }
 
-      if (!targetUserAccount) {
-        toast({
-          title: "User Not Found",
-          description: `No registered user found with email ${roommate.email}. Please ask them to create an account first.`,
-          variant: "destructive",
-        });
-        return;
-      }
+      console.log('🔍 STEP 1: Checking auth.users table directly');
       
-      console.log('Target user account found:', targetUserAccount);
+      // First, let's check auth.users directly using a database function
+      const { data: authUsers, error: authError } = await supabase.rpc('get_users_details', {
+        p_user_ids: []
+      });
+      
+      console.log('📊 Auth users check result:', { authUsers, authError });
 
-      // Check if roommate already exists for this user (creator)
+      // Check profiles table
+      console.log('🔍 STEP 2: Checking profiles table');
+      const { data: allProfiles, error: allProfilesError } = await supabase
+        .from('profiles')
+        .select('*');
+      
+      console.log('📊 All profiles in system:', allProfiles);
+      console.log('📊 Profiles error:', allProfilesError);
+
+      // Look for target user profile
+      const { data: targetUserProfile, error: profileError } = await supabase
+        .from('profiles')
+        .select('id, email, name, full_name, upi_id, mobile_number')
+        .eq('email', email.toLowerCase())
+        .maybeSingle();
+
+      console.log('📊 Target user profile query:', { targetUserProfile, profileError });
+
+      if (profileError && profileError.code !== 'PGRST116') {
+        console.error('❌ Database error:', profileError);
+        toast({
+          title: "Database Error",
+          description: "Failed to verify user. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (!targetUserProfile) {
+        console.log('❌ USER NOT FOUND IN PROFILES');
+        
+        // Let's try a different approach - search by partial email match
+        const { data: partialMatch, error: partialError } = await supabase
+          .from('profiles')
+          .select('*')
+          .ilike('email', `%${email}%`);
+        
+        console.log('🔍 Partial email match results:', partialMatch);
+        
+        toast({
+          title: "❌ User Not Found",
+          description: `No user found with email "${email}". Make sure they have signed up and logged in at least once.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      console.log('✅ FOUND USER! Profile:', targetUserProfile);
+
+      // Check for duplicates
       const { data: existingRoommate, error: checkError } = await supabase
         .from('roommates')
         .select('id')
-        .eq('user_id', user.id) // Check based on creator
-        .eq('email', roommate.email) // Email of the roommate to be added
+        .eq('user_id', user.id)
+        .eq('email', email.toLowerCase())
         .maybeSingle();
 
       if (checkError) {
-        console.error('Error checking existing roommate:', checkError);
+        console.error('❌ Error checking existing roommate:', checkError);
         throw checkError;
       }
 
       if (existingRoommate) {
+        console.log('⚠️ Duplicate found');
         toast({
-          title: "Error",
-          description: "This roommate (by email) has already been added by you.",
+          title: "Already Added",
+          description: "This roommate has already been added to your list.",
           variant: "destructive",
         });
         return;
       }
 
-      // Insert the new roommate
-      const { data, error } = await supabase
-        .from('roommates')
-        .insert([{ 
-          ...roommate, 
-          user_id: user.id, // user_id is the creator of this roommate entry
-          balance: 0 
-        }])
-        .select()
+      console.log('🚀 CREATING ROOMMATE ENTRIES');
+
+      // Get current user's profile
+      const { data: currentUserProfile, error: currentProfileError } = await supabase
+        .from('profiles')
+        .select('id, email, name, full_name, upi_id, mobile_number')
+        .eq('id', user.id)
         .single();
 
-      if (error) {
-        console.error('Supabase insert error:', error);
-        throw error;
+      console.log('📊 Current user profile:', currentUserProfile);
+
+      // Create roommate entry for current user
+      const roommateData = { 
+        name: targetUserProfile.name || targetUserProfile.full_name || targetUserProfile.email.split('@')[0] || 'Unknown',
+        upi_id: targetUserProfile.upi_id || 'Not set',
+        email: targetUserProfile.email,
+        phone: targetUserProfile.mobile_number || null,
+        user_id: user.id,
+        balance: 0 
+      };
+
+      console.log('📝 Creating roommate with data:', roommateData);
+
+      const { error: currentUserRoommateError } = await supabase
+        .from('roommates')
+        .insert([roommateData]);
+
+      if (currentUserRoommateError) {
+        console.error('❌ Failed to create roommate:', currentUserRoommateError);
+        throw currentUserRoommateError;
       }
 
-      console.log('Successfully added roommate:', data);
-      await fetchRoommates(); 
+      console.log('✅ Roommate created successfully!');
+
+      // Create reciprocal entry for target user
+      if (currentUserProfile) {
+        const reciprocalData = { 
+          name: currentUserProfile.name || currentUserProfile.full_name || user.email?.split('@')[0] || 'Unknown User',
+          upi_id: currentUserProfile.upi_id || 'Not set',
+          email: user.email || '',
+          phone: currentUserProfile.mobile_number || null,
+          user_id: targetUserProfile.id,
+          balance: 0 
+        };
+
+        console.log('📝 Creating reciprocal roommate with data:', reciprocalData);
+
+        const { error: targetUserRoommateError } = await supabase
+          .from('roommates')
+          .insert([reciprocalData]);
+
+        if (targetUserRoommateError) {
+          console.error('❌ Failed to create reciprocal roommate entry:', targetUserRoommateError);
+        } else {
+          console.log('✅ Reciprocal roommate created successfully!');
+        }
+      }
+
+      await fetchRoommates();
       
       toast({
-        title: "Roommate Added",
-        description: `${roommate.name} has been added to your group`,
+        title: "🎉 Success!",
+        description: `Roommate added successfully!`,
       });
+      
     } catch (error: any) {
-      console.error('Error adding roommate:', error);
+      console.error('💥 CRITICAL ERROR in addRoommate:', error);
       toast({
-        title: "Error",
-        description: `Failed to add roommate: ${error.message || 'Unknown error'}`,
+        title: "Addition Failed",
+        description: `Could not add roommate: ${error.message || 'Unknown error occurred'}`,
         variant: "destructive",
       });
     }
@@ -176,29 +248,26 @@ export const useRoommates = () => {
 
   const deleteRoommate = async (roommateId: string) => {
     try {
-      console.log('Deleting roommate:', roommateId);
+      console.log('🗑️ Deleting roommate:', roommateId);
       
       const { error } = await supabase
         .from('roommates')
         .delete()
-        .eq('id', roommateId); // RLS policy for delete is "USING (auth.uid() = user_id)"
-                               // This means only the creator can delete.
+        .eq('id', roommateId);
 
       if (error) {
-        console.error('Supabase delete error:', error);
+        console.error('❌ Supabase delete error:', error);
         throw error;
       }
       
-      // const deletedRoommate = roommates.find(r => r.id === roommateId); // Not needed if refetching
-      // setRoommates(prev => prev.filter(roommate => roommate.id !== roommateId));
-      await fetchRoommates(); // Refetch to ensure list is up-to-date
+      await fetchRoommates();
       
       toast({
         title: "Roommate Removed",
-        description: `Roommate has been removed from your group`, // Generic message as name might not be in current list
+        description: "Roommate has been removed from your group",
       });
     } catch (error: any) {
-      console.error('Error deleting roommate:', error);
+      console.error('💥 Error deleting roommate:', error);
       toast({
         title: "Error",
         description: `Failed to delete roommate: ${error.message}`,
@@ -208,34 +277,24 @@ export const useRoommates = () => {
   };
 
   const deleteAllMyRoommates = async () => {
-    if (!user) {
-      toast({
-        title: "Error",
-        description: "You must be logged in to perform this action.",
-        variant: "destructive",
-      });
-      return;
-    }
+    if (!user) return;
     try {
-      console.log('Deleting all roommates for user:', user.id);
+      console.log('🗑️ Deleting all roommates for user:', user.id);
       const { error } = await supabase
         .from('roommates')
         .delete()
-        .eq('user_id', user.id); // Delete all roommates CREATED BY the current user
+        .eq('user_id', user.id);
 
-      if (error) {
-        console.error('Supabase delete all roommates error:', error);
-        throw error;
-      }
+      if (error) throw error;
       
-      await fetchRoommates(); // Refetch to update the list
+      await fetchRoommates();
       
       toast({
         title: "All Roommates Removed",
-        description: `All roommates you added have been removed.`,
+        description: "All roommates you added have been removed.",
       });
     } catch (error: any) {
-      console.error('Error deleting all roommates:', error);
+      console.error('💥 Error deleting all roommates:', error);
       toast({
         title: "Error",
         description: `Failed to remove all roommates: ${error.message}`,
@@ -251,27 +310,13 @@ export const useRoommates = () => {
         subject: "Payment Request from AirMates",
         html: `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="text-align: center; margin-bottom: 30px;">
-              <h1 style="color: #2563eb; margin: 0;">AirMates</h1>
-              <p style="color: #6b7280; margin: 5px 0;">Your Smart Roommate Expense Manager</p>
-            </div>
-            
             <h2 style="color: #2563eb;">Payment Request</h2>
             <p>Hi ${roommate.name},</p>
             <p>You have a pending payment request on AirMates.</p>
-            
             <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
               <h3 style="margin: 0; color: #374151; font-size: 24px;">Amount Due: ₹${Math.abs(roommate.balance)}</h3>
-              <p style="margin: 10px 0 0 0; color: #6b7280;">Please settle this amount at your earliest convenience.</p>
             </div>
-            
-            <p>You can make the payment using your UPI ID: <strong>${roommate.upi_id}</strong></p>
-            
-            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-              <p style="margin: 0;">Best regards,<br/>
-              <strong>AirMates Team</strong><br/>
-              <span style="color: #6b7280;">Managing roommate expenses made easy</span></p>
-            </div>
+            <p>Please settle this amount at your earliest convenience.</p>
           </div>
         `,
         from: "AirMates <AirMates@airmedisphere.in>"
@@ -288,7 +333,7 @@ export const useRoommates = () => {
         description: `Payment request email sent to ${roommate.name}`,
       });
     } catch (error: any) {
-      console.error('Error sending email:', error);
+      console.error('💥 Error sending email:', error);
       toast({
         title: "Failed to Send Request",
         description: `Failed to send email to ${roommate.name}`,
@@ -301,7 +346,6 @@ export const useRoommates = () => {
     if (user) {
       fetchRoommates();
     } else {
-      // Clear roommates if user logs out
       setRoommates([]);
       setLoading(false);
     }

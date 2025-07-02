@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,7 +10,7 @@ import { useProducts } from '@/hooks/useProducts';
 import { useIsMobile } from '@/hooks/use-mobile';
 
 interface BulkProductSelectorProps {
-  onAdd: (selectedProducts: Array<{ product: any; quantity: number }>) => Promise<void>; // updated quantity type
+  onAdd: (selectedProducts: Array<{ product: any; quantity: string }>) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -41,18 +42,24 @@ export const BulkProductSelector = ({ onAdd, onCancel }: BulkProductSelectorProp
   };
 
   const handleQuantityChange = (productId: string, quantity: string) => {
-    setQuantities(prev => ({ ...prev, [productId]: quantity }));
+    // Input validation: only allow positive numbers
+    if (quantity === '' || /^\d+$/.test(quantity)) {
+      setQuantities(prev => ({ ...prev, [productId]: quantity }));
+    }
   };
 
   const handleSubmit = async () => {
     const selectedProductsData = Array.from(selectedProducts)
       .map(productId => {
         const product = products.find(p => p.id === productId);
-        const quantityStr = quantities[productId];
-        const quantity = Number(quantityStr); // ✅ convert string to number
-        return product && quantity ? { product, quantity } : null;
+        const quantity = quantities[productId];
+        // Validate quantity is a positive number
+        if (product && quantity && /^\d+$/.test(quantity) && parseInt(quantity) > 0) {
+          return { product, quantity };
+        }
+        return null;
       })
-      .filter(Boolean) as Array<{ product: any; quantity: number }>; // ✅ updated to number
+      .filter(Boolean) as Array<{ product: any; quantity: string }>;
 
     if (selectedProductsData.length === 0) return;
 
@@ -85,8 +92,9 @@ export const BulkProductSelector = ({ onAdd, onCancel }: BulkProductSelectorProp
             <Input
               placeholder="Search products..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => setSearchTerm(e.target.value.slice(0, 100))}
               className="pl-10"
+              maxLength={100}
               size={isMobile ? "sm" : "default"}
             />
           </div>
@@ -132,6 +140,7 @@ export const BulkProductSelector = ({ onAdd, onCancel }: BulkProductSelectorProp
                           value={quantities[product.id] || ''}
                           onChange={(e) => handleQuantityChange(product.id, e.target.value)}
                           className="text-center text-xs"
+                          maxLength={3}
                           size="sm"
                         />
                       </div>

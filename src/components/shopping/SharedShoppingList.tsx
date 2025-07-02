@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -87,7 +86,7 @@ export const SharedShoppingList = () => {
   };
 
   const handleBulkAdd = async (selectedProducts: Array<{ product: any; quantity: string }>) => {
-    for (const { product, quantity } of selectedProducts) {
+    for (const { product, quantity } of (selectedProducts)) {
       const itemData: AddItemData = {
         product_id: product.id,
         quantity,
